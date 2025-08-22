@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: telegram-bot-free
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -u webhook.py
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.5
+      - key: TOKEN
+        sync: false           # спросит в UI
+      - key: ADMIN_IDS
+        sync: false
+      - key: ALLOWED_USERS
+        sync: false
+      - key: TIMEZONE
+        value: Europe/Moscow  # можно поменять
+      - key: WEBHOOK_SECRET
+        sync: false
+      # WEBHOOK_PATH можно не задавать (по умолчанию /webhook)
