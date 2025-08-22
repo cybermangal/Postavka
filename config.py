@@ -1,4 +1,4 @@
-TOKEN = "8436732422:AAFKgusiSFJo1281ez8CEDpXKwvYUFdFRdk"
+TOKEN = ""
 ADMIN_IDS = {537051799, 408066374} # 414809739, 377726591  # сюда свой Telegram ID (можно несколько)
 ALLOWED_USERS = {408066374} # 615031942, 834003608, 377726591, 414809739}  # сюда всех пользователей, кому разрешён доступ
 TIMEZONE = "Europe/Samara"
