@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+env/
+.idea/
+.vscode/
+.env
+*.log
+allowed_users.json
+known_users.json
+reminders.json
