@@ -1,4 +1,20 @@
-TOKEN = ""
-ADMIN_IDS = {537051799, 408066374} # 414809739, 377726591  # сюда свой Telegram ID (можно несколько)
-ALLOWED_USERS = {408066374} # 615031942, 834003608, 377726591, 414809739}  # сюда всех пользователей, кому разрешён доступ
-TIMEZONE = "Europe/Samara"
+# config.py
+import os
+import json
+
+def _parse_set(val: str) -> set[int]:
+    if not val:
+        return set()
+    # допускает "1,2,3" или " [1, 2] "
+    try:
+        if val.strip().startswith('['):
+            return {int(x) for x in json.loads(val)}
+        return {int(x) for x in val.replace(' ', '').split(',') if x}
+    except Exception:
+        return set()
+
+TOKEN = os.environ.get("TOKEN", "")  # ОБЯЗАТЕЛЬНО задать на сервере
+ADMIN_IDS = _parse_set(os.environ.get("ADMIN_IDS", ""))
+ALLOWED_USERS = _parse_set(os.environ.get("ALLOWED_USERS", ""))
+
+TIMEZONE = os.environ.get("TIMEZONE", "UTC")
