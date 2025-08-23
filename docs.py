@@ -1,8 +1,9 @@
 import os
 from aiogram import types, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, FSInputFile
+from aiogram.fsm.filters import StateFilter  # 👈
 
-DOC_PATH = r"C:\Users\Metalist\Desktop\1\1.docx"
+DOC_PATH = os.path.join(os.path.dirname(__file__), "1.docx")  # лучше относительный путь
 DOC_NAME = "1.docx"
 
 docs_kb = ReplyKeyboardMarkup(
@@ -14,22 +15,20 @@ docs_kb = ReplyKeyboardMarkup(
 )
 
 def register_docs_handlers(dp, is_authorized, refuse):
-    @dp.message(F.text == "📁 Документы")
+    @dp.message(StateFilter('*'), F.text == "📁 Документы")  # 👈
     async def docs_menu(message: types.Message, state=None):
         if not is_authorized(message.from_user.id):
             await refuse(message)
             return
 
         if not os.path.isfile(DOC_PATH):
-            # используем прикреплённую к боту клавиатуру, если есть
             kb = getattr(message.bot, "main_kb", None)
             await message.answer("Файл не найден.", reply_markup=kb)
             return
 
         await message.answer("Нажми на кнопку, чтобы получить файл:", reply_markup=docs_kb)
 
-    # ⬇️ Раньше здесь стояло @dp.message() — перехватывало всё подряд.
-    @dp.message(F.text.in_({DOC_NAME, "⬅️ В меню"}))
+    @dp.message(StateFilter('*'), F.text.in_({DOC_NAME, "⬅️ В меню"}))  # 👈
     async def send_doc(message: types.Message, state=None):
         if not is_authorized(message.from_user.id):
             await refuse(message)
@@ -43,6 +42,5 @@ def register_docs_handlers(dp, is_authorized, refuse):
                 await message.answer(f"Ошибка при отправке: {e}", reply_markup=docs_kb)
             return
 
-        # Назад в меню
         kb = getattr(message.bot, "main_kb", None)
         await message.answer("Главное меню:", reply_markup=kb)

@@ -1,9 +1,8 @@
-# calc.py
-
 from aiogram import types, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.filters import StateFilter  # 👈 добавлено
 
 # Клавиатура раздела калькулятора
 calc_kb = ReplyKeyboardMarkup(
@@ -19,7 +18,7 @@ class CalcFSM(StatesGroup):
 
 def register_calc_handlers(dp, is_authorized, refuse):
 
-    @dp.message(F.text == "📊 Калькулятор")
+    @dp.message(StateFilter('*'), F.text == "📊 Калькулятор")  # 👈 работает из любого состояния
     async def calc_start(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
             await refuse(message)
@@ -37,7 +36,7 @@ def register_calc_handlers(dp, is_authorized, refuse):
         if not is_authorized(message.from_user.id):
             await refuse(message)
             return
-        if message.text.lower() == "/cancel":
+        if (message.text or "").lower() == "/cancel":
             await state.clear()
             await message.answer("Отменено.", reply_markup=calc_kb)
             return
@@ -68,7 +67,7 @@ def register_calc_handlers(dp, is_authorized, refuse):
         if not is_authorized(message.from_user.id):
             await refuse(message)
             return
-        if message.text.lower() == "/cancel":
+        if (message.text or "").lower() == "/cancel":
             await state.clear()
             await message.answer("Отменено.", reply_markup=calc_kb)
             return
@@ -89,35 +88,26 @@ def register_calc_handlers(dp, is_authorized, refuse):
         order_value = data["order_value"]
         order_type = data["order_type"]
 
-        # Чистый заказ и исполнитель
         if order_type == vendor_type:
-            # Оба с НДС или оба без НДС
             net_order = order_value
             net_vendor = vendor_value
             profit = (net_order - net_vendor) * 0.77
             markup_type = "A"
-            k = 0.77
         elif order_type == "ндс" and vendor_type == "бндс":
-            # Заказ с НДС, Исполнитель без НДС
             net_order = order_value / 1.2
             net_vendor = vendor_value
             profit = (net_order - net_vendor) * 0.88
             markup_type = "B"
-            k = 0.88
         elif order_type == "бндс" and vendor_type == "ндс":
-            # Заказ без НДС, Исполнитель с НДС
             net_order = order_value
             net_vendor = vendor_value / 1.2
             profit = (net_order - net_vendor) * 0.88
             markup_type = "C"
-            k = 0.88
         else:
-            await message.answer(
-                "Ошибка: что-то пошло не так с типами. Попробуйте ещё раз.", reply_markup=calc_kb)
+            await message.answer("Ошибка: что-то пошло не так с типами. Попробуйте ещё раз.", reply_markup=calc_kb)
             await state.clear()
             return
 
-        # Рентабельность
         try:
             margin = (profit / net_order) * 100 if net_order else 0
         except ZeroDivisionError:
@@ -127,8 +117,6 @@ def register_calc_handlers(dp, is_authorized, refuse):
         margin = round(margin, 2)
         net_order = round(net_order, 2)
         net_vendor = round(net_vendor, 2)
-
-        # ... в функции get_vendor внутри register_calc_handlers
 
         formula_label = {
             "A": "Оба 'с НДС' или оба 'без НДС'",
@@ -146,4 +134,3 @@ def register_calc_handlers(dp, is_authorized, refuse):
             parse_mode="HTML", reply_markup=calc_kb
         )
         await state.clear()
-

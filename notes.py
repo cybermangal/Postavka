@@ -1,4 +1,3 @@
-# notes.py — пользовательские заметки в MongoDB, корректные фильтры (FSM)
 from datetime import datetime, timezone
 from typing import List
 
@@ -7,10 +6,10 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.filters import StateFilter  # 👈
 
 from db import notes as col
 
-# Клавиатура раздела заметок
 notes_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить заметку")],
@@ -20,7 +19,6 @@ notes_kb = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-# FSM: ждём текст заметки только после явного запроса
 class NotesFSM(StatesGroup):
     waiting_for_text = State()
 
@@ -43,8 +41,7 @@ async def _delete_note_by_index(user_id: int, idx: int) -> bool:
 
 def register_notes_handlers(dp, is_authorized, refuse):
 
-    # Вход в раздел
-    @dp.message(F.text == "🗒 Мои заметки")
+    @dp.message(StateFilter('*'), F.text == "🗒 Мои заметки")  # 👈
     async def notes_menu(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
             await refuse(message); return
@@ -56,8 +53,7 @@ def register_notes_handlers(dp, is_authorized, refuse):
             reply_markup=notes_kb
         )
 
-    # Запрос на добавление — переводим в состояние ожидания текста
-    @dp.message(F.text == "➕ Добавить заметку")
+    @dp.message(StateFilter('*'), F.text == "➕ Добавить заметку")  # 👈
     async def ask_note(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
             await refuse(message); return
@@ -67,7 +63,6 @@ def register_notes_handlers(dp, is_authorized, refuse):
             reply_markup=ReplyKeyboardRemove()
         )
 
-    # Принять текст заметки — ТОЛЬКО когда в нужном состоянии
     @dp.message(NotesFSM.waiting_for_text, F.text)
     async def save_note(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
@@ -87,8 +82,7 @@ def register_notes_handlers(dp, is_authorized, refuse):
         await state.clear()
         await message.reply(f"✅ Заметка сохранена (id: `{note_id}`)", parse_mode="Markdown", reply_markup=notes_kb)
 
-    # Список заметок
-    @dp.message(F.text == "📄 Список заметок")
+    @dp.message(StateFilter('*'), F.text == "📄 Список заметок")  # 👈
     async def list_notes(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
             await refuse(message); return
@@ -110,7 +104,6 @@ def register_notes_handlers(dp, is_authorized, refuse):
         lines.append("\nУдалить: `/delnote N` (номер из списка)")
         await message.answer("\n".join(lines), parse_mode="Markdown", reply_markup=notes_kb)
 
-    # Удаление по номеру из последнего списка
     @dp.message(Command("delnote"))
     async def del_note_cmd(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
@@ -119,14 +112,20 @@ def register_notes_handlers(dp, is_authorized, refuse):
         if len(parts) < 2 or not parts[1].isdigit():
             await message.reply("Использование: `/delnote N` — номер из списка.", parse_mode="Markdown")
             return
-        ok = await _delete_note_by_index(message.from_user.id, int(parts[1]))
+        ok = await _delete_note_by_index(message.from_user.id, int(parts[1])))
         await message.reply("🗑 Удалено." if ok else "Не найден такой номер.", reply_markup=notes_kb)
 
-    # Возврат в главное меню
-    @dp.message(F.text == "⬅️ В меню")
+    @dp.message(StateFilter('*'), F.text == "⬅️ В меню")  # 👈
     async def back_to_menu(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
             await refuse(message); return
         await state.clear()
         kb = getattr(message.bot, "main_kb", None)
         await message.answer("Главное меню:", reply_markup=kb)
+
+    @dp.message(Command("cancel"))  # 👈 глобальная отмена, на всякий случай
+    async def cancel_any(message: types.Message, state: FSMContext):
+        if not is_authorized(message.from_user.id):
+            await refuse(message); return
+        await state.clear()
+        await message.reply("Отменено.", reply_markup=notes_kb)

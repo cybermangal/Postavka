@@ -1,4 +1,4 @@
-# Postavka.py — основной файл бота (aiogram v3)
+# Postavka.py — основной файл бота (aiogram v3, webhook/polling)
 import asyncio
 import logging
 from typing import Iterable, Set
@@ -8,23 +8,24 @@ from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.filters import Command
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.filters import StateFilter
 
 # === CONFIG ===
 # В config.py должны быть:
-# TOKEN, ADMIN_IDS (list|set), ALLOWED_USERS (list|set)
+# TOKEN, ADMIN_IDS (list|set), ALLOWED_USERS (list|set), TIMEZONE (строка)
 from config import TOKEN, ADMIN_IDS, ALLOWED_USERS
 try:
-    from config import TIMEZONE   # например, "Europe/Samara"
+    from config import TIMEZONE   # например, "Europe/Moscow"
 except Exception:
     TIMEZONE = "UTC"
 
-# === Разделы ===
+# === Разделы (модули) ===
 from notes import register_notes_handlers
 from calc import register_calc_handlers
 from docs import register_docs_handlers
 
-# === Напоминания (отдельный модуль) ===
-# Файл reminders.py должен лежать рядом
+# === Напоминания (модуль) ===
 from reminders import register_reminders_handlers
 
 # === Логи ===
@@ -79,7 +80,7 @@ admin_kb = ReplyKeyboardMarkup(
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# 👇 Важно: сделать клавиатуры доступными в других модулях через message.bot.*
+# 👇 Делаем клавиатуры доступными в других модулях через message.bot.*
 setattr(bot, "main_kb", main_kb)
 setattr(bot, "admin_kb", admin_kb)
 
@@ -93,7 +94,8 @@ async def cmd_help(message: types.Message):
         "*Справка*\n\n"
         "• `/start` — главное меню\n"
         "• `/whoami` — показать ваш Telegram ID\n"
-        "• `/users` — список админов/пользователей (только админ)\n\n"
+        "• `/users` — список админов/пользователей (только админ)\n"
+        "• `/cancel` — отмена ввода и сброс состояния\n\n"
         "*Напоминания (только админ):*\n"
         "• Кнопка: «🔔 Напоминания» — мини-справка\n"
         "• `/remind_help` — мини-справка по напоминаниям\n"
@@ -125,19 +127,27 @@ async def cmd_users(message: types.Message):
         parse_mode="Markdown"
     )
 
-# === /start ===
 @dp.message(Command("start"))
-async def start(message: types.Message):
+async def start(message: types.Message, state: FSMContext):
     if not is_authorized(message.from_user.id):
         await refuse(message); return
+    await state.clear()  # важный сброс любых зависших состояний
     kb = admin_kb if is_admin(message.from_user.id) else main_kb
     await message.answer("Главное меню:", reply_markup=kb)
 
-# === Страхующее меню для трёх основных кнопок ===
+@dp.message(Command("cancel"))
+async def cancel_any(message: types.Message, state: FSMContext):
+    if not is_authorized(message.from_user.id):
+        await refuse(message); return
+    await state.clear()
+    kb = admin_kb if is_admin(message.from_user.id) else main_kb
+    await message.reply("Отменено.", reply_markup=kb)
+
+# === Страхующее меню для основных кнопок (работает из любого состояния) ===
 menu_router = Router(name="menu")
 
-@menu_router.message(F.text.in_({"📊 Калькулятор", "🗒 Мои заметки", "📁 Документы"}))
-async def menu_entry(message: types.Message):
+@menu_router.message(StateFilter('*'), F.text.in_({"📊 Калькулятор", "🗒 Мои заметки", "📁 Документы"}))
+async def menu_entry(message: types.Message, state: FSMContext):
     if not is_authorized(message.from_user.id):
         await refuse(message); return
     mapping = {
@@ -148,18 +158,18 @@ async def menu_entry(message: types.Message):
     kb = admin_kb if is_admin(message.from_user.id) else main_kb
     await message.answer(mapping.get(message.text, "Ок"), reply_markup=kb)
 
-# === Fallback: только если никто не сработал ===
+# === Fallback: последний ловец. Ничего не делает для авторизованных, отвечает отказом неавторизованным ===
 fallback_router = Router(name="fallback")
 
 @fallback_router.message()
 async def all_other(message: types.Message):
     if not is_authorized(message.from_user.id):
         await refuse(message)
-    # для своих — молчим
+    # для авторизованных — молчим, чтобы не мешать другим модулям
 
 # === Регистрация всех модулей/роутеров ===
 def setup_handlers() -> None:
-    # 1) Страхующее меню
+    # 1) Страхующее меню — до модулей
     dp.include_router(menu_router)
 
     # 2) Разделы
@@ -167,13 +177,15 @@ def setup_handlers() -> None:
     register_calc_handlers(dp, is_authorized, refuse)
     register_docs_handlers(dp, is_authorized, refuse)
 
-    # 3) Напоминания: кнопка «🔔 Напоминания» и все команды
+    # 3) Напоминания (кнопка «🔔 Напоминания» и все команды)
+    #    bot_instance нужен, если модуль пытается стартовать фоновые задачи на startup.
     register_reminders_handlers(dp, is_authorized, refuse, bot_instance=bot)
 
-    # 4) Общий ловец в самом конце
+    # 4) Общий ловец — строго в самом конце
     dp.include_router(fallback_router)
 
-# === Точка входа ===
+# === Точка входа для локального запуска (polling).
+# На Render (free) используйте webhook.py
 async def main():
     setup_handlers()
     await dp.start_polling(bot)
