@@ -79,6 +79,10 @@ admin_kb = ReplyKeyboardMarkup(
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# 👇 Важно: сделать клавиатуры доступными в других модулях через message.bot.*
+setattr(bot, "main_kb", main_kb)
+setattr(bot, "admin_kb", admin_kb)
+
 # === Команды верхнего уровня ===
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
@@ -163,7 +167,7 @@ def setup_handlers() -> None:
     register_calc_handlers(dp, is_authorized, refuse)
     register_docs_handlers(dp, is_authorized, refuse)
 
-    # 3) Напоминания: кнопка «🔔 Напоминания» и все команды (важно: корректный вызов!)
+    # 3) Напоминания: кнопка «🔔 Напоминания» и все команды
     register_reminders_handlers(dp, is_authorized, refuse, bot_instance=bot)
 
     # 4) Общий ловец в самом конце

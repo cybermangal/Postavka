@@ -21,12 +21,15 @@ def register_docs_handlers(dp, is_authorized, refuse):
             return
 
         if not os.path.isfile(DOC_PATH):
-            await message.answer("Файл не найден.", reply_markup=message.bot.main_kb)
+            # используем прикреплённую к боту клавиатуру, если есть
+            kb = getattr(message.bot, "main_kb", None)
+            await message.answer("Файл не найден.", reply_markup=kb)
             return
 
         await message.answer("Нажми на кнопку, чтобы получить файл:", reply_markup=docs_kb)
 
-    @dp.message()
+    # ⬇️ Раньше здесь стояло @dp.message() — перехватывало всё подряд.
+    @dp.message(F.text.in_({DOC_NAME, "⬅️ В меню"}))
     async def send_doc(message: types.Message, state=None):
         if not is_authorized(message.from_user.id):
             await refuse(message)
@@ -35,11 +38,11 @@ def register_docs_handlers(dp, is_authorized, refuse):
         if message.text == DOC_NAME:
             try:
                 file = FSInputFile(DOC_PATH)
-                await message.answer_document(file, caption="📁 1.docx", reply_markup=docs_kb)
+                await message.answer_document(file, caption=f"📁 {DOC_NAME}", reply_markup=docs_kb)
             except Exception as e:
                 await message.answer(f"Ошибка при отправке: {e}", reply_markup=docs_kb)
             return
 
-        if message.text == "⬅️ В меню":
-            await message.answer("Главное меню:", reply_markup=message.bot.main_kb)
-            return
+        # Назад в меню
+        kb = getattr(message.bot, "main_kb", None)
+        await message.answer("Главное меню:", reply_markup=kb)

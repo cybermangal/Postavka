@@ -10,13 +10,20 @@ services:
       - key: PYTHON_VERSION
         value: 3.12.5
       - key: TOKEN
-        sync: false           # спросит в UI
+        sync: false
       - key: ADMIN_IDS
         sync: false
       - key: ALLOWED_USERS
         sync: false
       - key: TIMEZONE
-        value: Europe/Moscow  # можно поменять
+        value: Europe/Moscow
       - key: WEBHOOK_SECRET
         sync: false
-      # WEBHOOK_PATH можно не задавать (по умолчанию /webhook)
+      - key: WEBHOOK_PATH
+        value: /webhook
+      - key: MONGODB_URI
+        sync: false
+      - key: MONGO_DB
+        value: telegram_bot
+      - key: CRON_TOKEN
+        sync: false

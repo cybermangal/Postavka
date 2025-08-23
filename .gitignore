@@ -1,11 +1,12 @@
+# python
 __pycache__/
-*.pyc
+*.py[cod]
+*.log
 .venv/
-env/
+.env
+
+# os/editor
+.DS_Store
 .idea/
 .vscode/
-.env
-*.log
-allowed_users.json
-known_users.json
-reminders.json
+
