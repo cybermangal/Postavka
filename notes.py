@@ -1,13 +1,16 @@
-# notes.py — простые пользовательские заметки с MongoDB
+# notes.py — пользовательские заметки в MongoDB, корректные фильтры (FSM)
 from datetime import datetime, timezone
 from typing import List
 
 from aiogram import types, F
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import Command
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
 
 from db import notes as col
 
+# Клавиатура раздела заметок
 notes_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Добавить заметку")],
@@ -16,6 +19,10 @@ notes_kb = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
 )
+
+# FSM: ждём текст заметки только после явного запроса
+class NotesFSM(StatesGroup):
+    waiting_for_text = State()
 
 async def _add_note(user_id: int, text: str) -> str:
     doc = {"user_id": int(user_id), "text": text, "created_at": datetime.now(timezone.utc)}
@@ -26,8 +33,7 @@ async def _list_notes(user_id: int, limit: int = 20) -> List[dict]:
     cur = col.find({"user_id": int(user_id)}).sort("created_at", -1).limit(limit)
     return [doc async for doc in cur]
 
-async def _delete_note(user_id: int, idx: int) -> bool:
-    # удаление по порядковому номеру в текущей выдаче
+async def _delete_note_by_index(user_id: int, idx: int) -> bool:
     items = await _list_notes(user_id, limit=50)
     if 1 <= idx <= len(items):
         target = items[idx - 1]
@@ -37,63 +43,90 @@ async def _delete_note(user_id: int, idx: int) -> bool:
 
 def register_notes_handlers(dp, is_authorized, refuse):
 
+    # Вход в раздел
     @dp.message(F.text == "🗒 Мои заметки")
-    async def notes_menu(message: types.Message):
+    async def notes_menu(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
             await refuse(message); return
+        await state.clear()
         await message.answer(
             "Заметки.\n\n"
-            "• Нажми «➕ Добавить заметку» и отправь текст.\n"
-            "• «📄 Список заметок» — показать последние 20 (для удаления — команда `/delnote N`).",
+            "• Нажми «➕ Добавить заметку» и отправь текст одной фразой.\n"
+            "• «📄 Список заметок» — показать последние 20 (удаление: `/delnote N`).",
             reply_markup=notes_kb
         )
 
+    # Запрос на добавление — переводим в состояние ожидания текста
     @dp.message(F.text == "➕ Добавить заметку")
-    async def ask_note(message: types.Message):
+    async def ask_note(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
             await refuse(message); return
-        await message.answer("Отправь текст заметки одним сообщением.")
+        await state.set_state(NotesFSM.waiting_for_text)
+        await message.answer(
+            "Отправь текст заметки одним сообщением.\n(/cancel — отмена)",
+            reply_markup=ReplyKeyboardRemove()
+        )
 
-    # ловим любое следующее сообщение в разделе — добавляем заметку
-    @dp.message(F.text & ~F.text.in_({"🗒 Мои заметки", "➕ Добавить заметку", "📄 Список заметок", "⬅️ В меню"}))
-    async def save_note(message: types.Message):
+    # Принять текст заметки — ТОЛЬКО когда в нужном состоянии
+    @dp.message(NotesFSM.waiting_for_text, F.text)
+    async def save_note(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
             await refuse(message); return
-        # простая эвристика: если недавно просили добавить — просто добавим; иначе не мешаем другим разделам
-        # здесь всегда добавляем, чтобы не усложнять FSM
-        text = message.text.strip()
-        if not text:
+
+        txt = (message.text or "").strip()
+        if txt.lower() in {"/cancel", "отмена"}:
+            await state.clear()
+            await message.answer("Отменено.", reply_markup=notes_kb)
             return
-        note_id = await _add_note(message.from_user.id, text)
+
+        if not txt:
+            await message.reply("Пустую заметку не сохраняю. Напиши текст или /cancel.")
+            return
+
+        note_id = await _add_note(message.from_user.id, txt)
+        await state.clear()
         await message.reply(f"✅ Заметка сохранена (id: `{note_id}`)", parse_mode="Markdown", reply_markup=notes_kb)
 
+    # Список заметок
     @dp.message(F.text == "📄 Список заметок")
-    async def list_notes(message: types.Message):
+    async def list_notes(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
             await refuse(message); return
+        await state.clear()
+
         items = await _list_notes(message.from_user.id, limit=20)
         if not items:
             await message.answer("Пока нет заметок.", reply_markup=notes_kb); return
 
         lines = []
         for i, it in enumerate(items, start=1):
-            dt = it["created_at"]
+            dt = it.get("created_at")
             try:
                 dt_str = dt.astimezone().strftime("%Y-%m-%d %H:%M")
             except Exception:
                 dt_str = str(dt)
-            # первые ~80 символов
-            preview = (it.get("text") or "")[:80]
+            preview = (it.get("text") or "").replace("\n", " ")[:120]
             lines.append(f"{i}. [{dt_str}] {preview}")
         lines.append("\nУдалить: `/delnote N` (номер из списка)")
         await message.answer("\n".join(lines), parse_mode="Markdown", reply_markup=notes_kb)
 
+    # Удаление по номеру из последнего списка
     @dp.message(Command("delnote"))
-    async def del_note_cmd(message: types.Message):
+    async def del_note_cmd(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
             await refuse(message); return
         parts = (message.text or "").split(maxsplit=1)
         if len(parts) < 2 or not parts[1].isdigit():
-            await message.reply("Использование: `/delnote N` — номер из последнего списка.", parse_mode="Markdown"); return
-        ok = await _delete_note(message.from_user.id, int(parts[1]))
+            await message.reply("Использование: `/delnote N` — номер из списка.", parse_mode="Markdown")
+            return
+        ok = await _delete_note_by_index(message.from_user.id, int(parts[1]))
         await message.reply("🗑 Удалено." if ok else "Не найден такой номер.", reply_markup=notes_kb)
+
+    # Возврат в главное меню
+    @dp.message(F.text == "⬅️ В меню")
+    async def back_to_menu(message: types.Message, state: FSMContext):
+        if not is_authorized(message.from_user.id):
+            await refuse(message); return
+        await state.clear()
+        kb = getattr(message.bot, "main_kb", None)
+        await message.answer("Главное меню:", reply_markup=kb)
