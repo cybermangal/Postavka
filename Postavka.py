@@ -4,28 +4,23 @@ import logging
 from typing import Iterable, Set
 
 import aiogram
-from aiogram import Bot, Dispatcher, types, F, Router
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.filters import StateFilter
 
 # === CONFIG ===
-# В config.py должны быть:
-# TOKEN, ADMIN_IDS (list|set), ALLOWED_USERS (list|set), TIMEZONE (строка)
 from config import TOKEN, ADMIN_IDS, ALLOWED_USERS
 try:
     from config import TIMEZONE   # например, "Europe/Moscow"
 except Exception:
     TIMEZONE = "UTC"
 
-# === Разделы (модули) ===
+# === Разделы ===
 from notes import register_notes_handlers
 from calc import register_calc_handlers
 from docs import register_docs_handlers
-
-# === Напоминания (модуль) ===
 from reminders import register_reminders_handlers
 
 # === Логи ===
@@ -70,7 +65,7 @@ admin_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="📊 Калькулятор")],
         [KeyboardButton(text="🗒 Мои заметки")],
         [KeyboardButton(text="📁 Документы")],
-        [KeyboardButton(text="🔔 Напоминания")],   # кнопка для админов — обрабатывается в reminders.py
+        [KeyboardButton(text="🔔 Напоминания")],
     ],
     resize_keyboard=True,
     input_field_placeholder="Админ-меню…",
@@ -80,7 +75,7 @@ admin_kb = ReplyKeyboardMarkup(
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# 👇 Делаем клавиатуры доступными в других модулях через message.bot.*
+# Сделаем клавиатуры доступными в других модулях
 setattr(bot, "main_kb", main_kb)
 setattr(bot, "admin_kb", admin_kb)
 
@@ -92,20 +87,19 @@ async def cmd_help(message: types.Message):
     tz_note = f"{TIMEZONE}" if TIMEZONE else "server time"
     text = (
         "*Справка*\n\n"
-        "• `/start` — главное меню\n"
+        "• `/start` — главное меню (сброс состояния)\n"
         "• `/whoami` — показать ваш Telegram ID\n"
         "• `/users` — список админов/пользователей (только админ)\n"
         "• `/cancel` — отмена ввода и сброс состояния\n\n"
         "*Напоминания (только админ):*\n"
         "• Кнопка: «🔔 Напоминания» — мини-справка\n"
-        "• `/remind_help` — мини-справка по напоминаниям\n"
-        "• `/remindall YYYY-MM-DD HH:MM Текст` — разовая рассылка\n"
-        "• `/remindall_daily HH:MM Текст` — ежедневно\n"
-        "• `/remindall_weekly ДНИ HH:MM Текст` — еженедельно (например: `пн,ср,пт` или `mon,fri`)\n"
-        "• `/remindall_monthly DD HH:MM Текст` — ежемесячно (день 1–31)\n"
-        "• `/reminders` — список напоминаний\n"
-        "• `/delreminder ID` — удалить напоминание\n\n"
-        f"_Время интерпретируется в таймзоне: *{tz_note}*._"
+        "• `/remind_help`\n"
+        "• `/remindall YYYY-MM-DD HH:MM Текст`\n"
+        "• `/remindall_daily HH:MM Текст`\n"
+        "• `/remindall_weekly ДНИ HH:MM Текст`\n"
+        "• `/remindall_monthly DD HH:MM Текст`\n"
+        "• `/reminders`, `/delreminder ID`\n\n"
+        f"_Таймзона: *{tz_note}*._"
     )
     await message.reply(text, parse_mode="Markdown")
 
@@ -143,46 +137,19 @@ async def cancel_any(message: types.Message, state: FSMContext):
     kb = admin_kb if is_admin(message.from_user.id) else main_kb
     await message.reply("Отменено.", reply_markup=kb)
 
-# === Страхующее меню для основных кнопок (работает из любого состояния) ===
-menu_router = Router(name="menu")
-
-@menu_router.message(StateFilter('*'), F.text.in_({"📊 Калькулятор", "🗒 Мои заметки", "📁 Документы"}))
-async def menu_entry(message: types.Message, state: FSMContext):
-    if not is_authorized(message.from_user.id):
-        await refuse(message); return
-    mapping = {
-        "📊 Калькулятор": "Раздел «Калькулятор». Что считаем?",
-        "🗒 Мои заметки": "Раздел «Заметки». Готов записывать.",
-        "📁 Документы":   "Раздел «Документы». Что открыть?",
-    }
-    kb = admin_kb if is_admin(message.from_user.id) else main_kb
-    await message.answer(mapping.get(message.text, "Ок"), reply_markup=kb)
-
-# === Fallback: последний ловец. Ничего не делает для авторизованных, отвечает отказом неавторизованным ===
-fallback_router = Router(name="fallback")
-
-@fallback_router.message()
+# === Fallback: только для НЕавторизованных — для своих не мешаем
+@dp.message()
 async def all_other(message: types.Message):
     if not is_authorized(message.from_user.id):
         await refuse(message)
-    # для авторизованных — молчим, чтобы не мешать другим модулям
+    # для авторизованных — молчим
 
-# === Регистрация всех модулей/роутеров ===
+# === Регистрация модулей ===
 def setup_handlers() -> None:
-    # 1) Страхующее меню — до модулей
-    dp.include_router(menu_router)
-
-    # 2) Разделы
     register_notes_handlers(dp, is_authorized, refuse)
     register_calc_handlers(dp, is_authorized, refuse)
     register_docs_handlers(dp, is_authorized, refuse)
-
-    # 3) Напоминания (кнопка «🔔 Напоминания» и все команды)
-    #    bot_instance нужен, если модуль пытается стартовать фоновые задачи на startup.
     register_reminders_handlers(dp, is_authorized, refuse, bot_instance=bot)
-
-    # 4) Общий ловец — строго в самом конце
-    dp.include_router(fallback_router)
 
 # === Точка входа для локального запуска (polling).
 # На Render (free) используйте webhook.py

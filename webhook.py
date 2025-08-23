@@ -18,9 +18,12 @@ WEBHOOK_PATH = os.environ.get("WEBHOOK_PATH", "/webhook")
 BASE_URL = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("WEBHOOK_BASE")
 CRON_TOKEN = os.environ.get("CRON_TOKEN", "")
 
+# опционально разрешим управлять поведением через флаг (по умолчанию НЕ удаляем)
+DELETE_WEBHOOK_ON_SHUTDOWN = os.environ.get("DELETE_WEBHOOK_ON_SHUTDOWN", "false").lower() == "true"
+
 if not BASE_URL:
     raise RuntimeError(
-        "BASE_URL не найден. На Render это RENDER_EXTERNAL_URL (проставляется автоматически).\n"
+        "BASE_URL не найден. На Render это RENDER_EXTERNAL_URL (проставляется автоматически). "
         "Локально можно задать WEBHOOK_BASE=https://<ngrok>"
     )
 
@@ -37,11 +40,15 @@ async def on_startup(app: web.Application):
     log.info("Webhook set to %s", url)
 
 async def on_shutdown(app: web.Application):
-    try:
-        await bot.delete_webhook(drop_pending_updates=False)
-        log.info("Webhook deleted")
-    except Exception:
-        pass
+    # ВАЖНО: по умолчанию webhook не удаляем — чтобы Telegram продолжал «будить» сервис
+    if DELETE_WEBHOOK_ON_SHUTDOWN:
+        try:
+            await bot.delete_webhook(drop_pending_updates=False)
+            log.info("Webhook deleted (per DELETE_WEBHOOK_ON_SHUTDOWN=true)")
+        except Exception:
+            pass
+    else:
+        log.info("Skip deleting webhook on shutdown (keep delivery alive)")
 
 async def health(_request: web.Request):
     return web.Response(text="ok")
@@ -62,8 +69,8 @@ def create_app() -> web.Application:
         secret_token=WEBHOOK_SECRET
     ).register(app, path=WEBHOOK_PATH)
 
-    app.router.add_get("/", health)          # healthcheck
-    app.router.add_post("/cron/due", cron_due)  # будильник из GitHub Actions
+    app.router.add_get("/", health)              # healthcheck
+    app.router.add_post("/cron/due", cron_due)   # будильник из GitHub Actions
 
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
