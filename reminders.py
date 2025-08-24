@@ -23,12 +23,11 @@ def _ints_set(items: Iterable) -> set[int]:
     except Exception:
         return set()
 
-def is_admin(user_id: int) -> bool:
-    return int(user_id) in _ints_set(ADMIN_IDS)
+ENV_ADMINS = _ints_set(ADMIN_IDS)
+ENV_ALLOWED = _ints_set(ALLOWED_USERS)
 
-def recipients() -> List[int]:
-    # можно расширить (напр., хранить known_users в Mongo)
-    return sorted(_ints_set(ADMIN_IDS) | _ints_set(ALLOWED_USERS))
+def is_admin(user_id: int) -> bool:
+    return int(user_id) in ENV_ADMINS
 
 def now_tz() -> datetime:
     return datetime.now(TZ)
@@ -91,20 +90,23 @@ def next_monthly(dt: datetime, dom: int) -> datetime:
     d = min(dom, last)
     return dt.replace(year=y, month=m, day=d)
 
-# --- обработка «просроченных» при будильнике ---
+# ---- получатели рассылки (учитываем Mongo allowlist из bot.allowed_dynamic) ----
+def _recipients(bot_instance=None) -> List[int]:
+    dyn = set()
+    if bot_instance is not None:
+        dyn = set(getattr(bot_instance, "allowed_dynamic", set()))
+    return sorted(ENV_ADMINS | ENV_ALLOWED | dyn)
+
+# ---- основной прогон для крона ----
 async def process_due_reminders(bot) -> int:
-    """
-    1) достаёт все напоминания `when <= now`
-    2) рассылает
-    3) репланирует повторяющиеся (или удаляет разовые)
-    """
     now = now_tz()
     due = [x async for x in col.find({"when": {"$lte": now}})]
     total = 0
+    users = _recipients(bot)
     for it in due:
         try:
             text = it.get("text", "")
-            for uid in recipients():
+            for uid in users:
                 try:
                     await bot.send_message(uid, f"🔔 Напоминание:\n{text}")
                 except Exception:
@@ -146,6 +148,17 @@ def _is_reminders_button(text: str) -> bool:
 
 # --- регистрация хендлеров ---
 def register_reminders_handlers(dp, is_authorized, refuse, *, bot_instance=None):
+
+    @dp.message(Command("tz"))
+    async def tz_cmd(message: types.Message):
+        await message.reply(
+            f"Текущая таймзона: `{TZ_NAME}`\nСейчас: *{now_tz().strftime('%Y-%m-%d %H:%M')}*",
+            parse_mode="Markdown"
+        )
+
+    def recipients() -> List[int]:
+        # локальная функция для help и т.д.
+        return _recipients(bot_instance)
 
     @dp.message(F.text.func(_is_reminders_button))
     async def reminders_button(message: types.Message):

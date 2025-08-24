@@ -5,7 +5,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-from Postavka import bot as main_bot, dp as main_dp, setup_handlers
+from Postavka import bot as main_bot, dp as main_dp, setup_handlers, refresh_access_cache
 from db import ensure_indexes
 from reminders import process_due_reminders
 
@@ -33,6 +33,7 @@ setup_handlers()
 
 async def on_startup(app: web.Application):
     await ensure_indexes()
+    await refresh_access_cache()  # 🔑 подтянем allowlist из Mongo
     url = BASE_URL.rstrip("/") + WEBHOOK_PATH
     await bot.set_webhook(url, secret_token=WEBHOOK_SECRET, drop_pending_updates=False)
     log.info("Webhook set to %s", url)
