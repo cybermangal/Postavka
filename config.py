@@ -17,4 +17,4 @@ TOKEN = os.environ.get("TOKEN", "")  # ОБЯЗАТЕЛЬНО задать на 
 ADMIN_IDS = _parse_set(os.environ.get("ADMIN_IDS", "537051799"))
 ALLOWED_USERS = _parse_set(os.environ.get("ALLOWED_USERS", "537051799"))
 
-TIMEZONE = os.environ.get("TIMEZONE", "UTC")
+TIMEZONE = os.environ.get("TIMEZONE", "Europe/Samara")
