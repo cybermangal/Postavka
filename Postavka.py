@@ -4,7 +4,7 @@ import logging
 from typing import Iterable, Set
 
 import aiogram
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, Router
 from aiogram.filters import Command
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -13,7 +13,7 @@ from aiogram.fsm.context import FSMContext
 # === CONFIG ===
 from config import TOKEN, ADMIN_IDS, ALLOWED_USERS
 try:
-    from config import TIMEZONE   # например, "Europe/Moscow"
+    from config import TIMEZONE
 except Exception:
     TIMEZONE = "UTC"
 
@@ -74,8 +74,6 @@ admin_kb = ReplyKeyboardMarkup(
 # === Бот и диспетчер ===
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-
-# Сделаем клавиатуры доступными в других модулях
 setattr(bot, "main_kb", main_kb)
 setattr(bot, "admin_kb", admin_kb)
 
@@ -88,11 +86,11 @@ async def cmd_help(message: types.Message):
     text = (
         "*Справка*\n\n"
         "• `/start` — главное меню (сброс состояния)\n"
-        "• `/whoami` — показать ваш Telegram ID\n"
+        "• `/whoami` — ваш Telegram ID\n"
         "• `/users` — список админов/пользователей (только админ)\n"
         "• `/cancel` — отмена ввода и сброс состояния\n\n"
         "*Напоминания (только админ):*\n"
-        "• Кнопка: «🔔 Напоминания» — мини-справка\n"
+        "• «🔔 Напоминания» — справка\n"
         "• `/remind_help`\n"
         "• `/remindall YYYY-MM-DD HH:MM Текст`\n"
         "• `/remindall_daily HH:MM Текст`\n"
@@ -125,7 +123,7 @@ async def cmd_users(message: types.Message):
 async def start(message: types.Message, state: FSMContext):
     if not is_authorized(message.from_user.id):
         await refuse(message); return
-    await state.clear()  # важный сброс любых зависших состояний
+    await state.clear()
     kb = admin_kb if is_admin(message.from_user.id) else main_kb
     await message.answer("Главное меню:", reply_markup=kb)
 
@@ -137,22 +135,27 @@ async def cancel_any(message: types.Message, state: FSMContext):
     kb = admin_kb if is_admin(message.from_user.id) else main_kb
     await message.reply("Отменено.", reply_markup=kb)
 
-# === Fallback: только для НЕавторизованных — для своих не мешаем
-@dp.message()
+# === Fallback как ОТДЕЛЬНЫЙ роутер, подключим его САМЫМ ПОСЛЕДНИМ ===
+fallback_router = Router(name="fallback")
+
+@fallback_router.message()
 async def all_other(message: types.Message):
     if not is_authorized(message.from_user.id):
         await refuse(message)
-    # для авторизованных — молчим
+    # для авторизованных — ничего не делаем, даём шанс более узким хэндлерам
 
 # === Регистрация модулей ===
 def setup_handlers() -> None:
+    # 1) Разделы
     register_notes_handlers(dp, is_authorized, refuse)
     register_calc_handlers(dp, is_authorized, refuse)
     register_docs_handlers(dp, is_authorized, refuse)
     register_reminders_handlers(dp, is_authorized, refuse, bot_instance=bot)
 
-# === Точка входа для локального запуска (polling).
-# На Render (free) используйте webhook.py
+    # 2) Fallback — строго в самом конце, чтобы НЕ перехватывать кнопки
+    dp.include_router(fallback_router)
+
+# === Локальный запуск (polling). На Render используйте webhook.py
 async def main():
     setup_handlers()
     await dp.start_polling(bot)
