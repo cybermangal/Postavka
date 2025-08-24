@@ -2,13 +2,11 @@ from aiogram import types, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.filters import StateFilter  # 👈 добавлено
+from aiogram.filters import StateFilter  # ✅ правильный импорт
 
 # Клавиатура раздела калькулятора
 calc_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="⬅️ В меню")],
-    ],
+    keyboard=[[KeyboardButton(text="⬅️ В меню")]],
     resize_keyboard=True,
 )
 
@@ -18,11 +16,10 @@ class CalcFSM(StatesGroup):
 
 def register_calc_handlers(dp, is_authorized, refuse):
 
-    @dp.message(StateFilter('*'), F.text == "📊 Калькулятор")  # 👈 работает из любого состояния
+    @dp.message(StateFilter('*'), F.text == "📊 Калькулятор")
     async def calc_start(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
-            await refuse(message)
-            return
+            await refuse(message); return
         await message.answer(
             "Введите сумму заказа с пометкой НДС/БНДС:\n\n"
             "Например:\n"
@@ -34,8 +31,7 @@ def register_calc_handlers(dp, is_authorized, refuse):
     @dp.message(CalcFSM.waiting_for_order)
     async def get_order(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
-            await refuse(message)
-            return
+            await refuse(message); return
         if (message.text or "").lower() == "/cancel":
             await state.clear()
             await message.answer("Отменено.", reply_markup=calc_kb)
@@ -65,8 +61,7 @@ def register_calc_handlers(dp, is_authorized, refuse):
     @dp.message(CalcFSM.waiting_for_vendor)
     async def get_vendor(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
-            await refuse(message)
-            return
+            await refuse(message); return
         if (message.text or "").lower() == "/cancel":
             await state.clear()
             await message.answer("Отменено.", reply_markup=calc_kb)
@@ -104,7 +99,7 @@ def register_calc_handlers(dp, is_authorized, refuse):
             profit = (net_order - net_vendor) * 0.88
             markup_type = "C"
         else:
-            await message.answer("Ошибка: что-то пошло не так с типами. Попробуйте ещё раз.", reply_markup=calc_kb)
+            await message.answer("Ошибка: что-то пошло не так с типами.", reply_markup=calc_kb)
             await state.clear()
             return
 

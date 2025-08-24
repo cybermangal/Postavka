@@ -7,7 +7,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.filters import StateFilter
+from aiogram.filters import StateFilter  # ✅ правильный импорт
 
 from db import notes as col
 
@@ -44,7 +44,7 @@ async def _delete_note_by_index(user_id: int, idx: int) -> bool:
 
 def register_notes_handlers(dp, is_authorized, refuse):
 
-    # Вход в раздел: работает из любого состояния и ничего не перехватывает дальше
+    # Вход в раздел
     @dp.message(StateFilter('*'), F.text == "🗒 Мои заметки")
     async def notes_menu(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
@@ -57,7 +57,7 @@ def register_notes_handlers(dp, is_authorized, refuse):
             reply_markup=notes_kb
         )
 
-    # Явный запрос на добавление — ставим состояние ожидания текста
+    # Явный запрос на добавление — ставим состояние
     @dp.message(StateFilter('*'), F.text == "➕ Добавить заметку")
     async def ask_note(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
@@ -68,7 +68,7 @@ def register_notes_handlers(dp, is_authorized, refuse):
             reply_markup=ReplyKeyboardRemove()
         )
 
-    # Принятие текста заметки — ТОЛЬКО в состоянии waiting_for_text
+    # Принятие текста — ТОЛЬКО в состоянии waiting_for_text
     @dp.message(NotesFSM.waiting_for_text, F.text)
     async def save_note(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
@@ -88,7 +88,7 @@ def register_notes_handlers(dp, is_authorized, refuse):
         await state.clear()
         await message.reply(f"✅ Заметка сохранена (id: `{note_id}`)", parse_mode="Markdown", reply_markup=notes_kb)
 
-    # Список заметок — из любого состояния, перед показом очищаем состояние
+    # Список заметок
     @dp.message(StateFilter('*'), F.text == "📄 Список заметок")
     async def list_notes(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
@@ -111,7 +111,7 @@ def register_notes_handlers(dp, is_authorized, refuse):
         lines.append("\nУдалить: `/delnote N` (номер из списка)")
         await message.answer("\n".join(lines), parse_mode="Markdown", reply_markup=notes_kb)
 
-    # Удаление по номеру из списка
+    # Удаление по номеру
     @dp.message(Command("delnote"))
     async def del_note_cmd(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):
@@ -123,7 +123,7 @@ def register_notes_handlers(dp, is_authorized, refuse):
         ok = await _delete_note_by_index(message.from_user.id, int(parts[1]))
         await message.reply("🗑 Удалено." if ok else "Не найден такой номер.", reply_markup=notes_kb)
 
-    # Назад в меню — из любого состояния
+    # Назад в меню
     @dp.message(StateFilter('*'), F.text == "⬅️ В меню")
     async def back_to_menu(message: types.Message, state: FSMContext):
         if not is_authorized(message.from_user.id):

@@ -1,9 +1,9 @@
 import os
 from aiogram import types, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, FSInputFile
-from aiogram.fsm.filters import StateFilter  # 👈
+from aiogram.filters import StateFilter  # ✅ правильный импорт
 
-DOC_PATH = os.path.join(os.path.dirname(__file__), "1.docx")  # лучше относительный путь
+DOC_PATH = os.path.join(os.path.dirname(__file__), "1.docx")  # относительный путь
 DOC_NAME = "1.docx"
 
 docs_kb = ReplyKeyboardMarkup(
@@ -15,11 +15,10 @@ docs_kb = ReplyKeyboardMarkup(
 )
 
 def register_docs_handlers(dp, is_authorized, refuse):
-    @dp.message(StateFilter('*'), F.text == "📁 Документы")  # 👈
+    @dp.message(StateFilter('*'), F.text == "📁 Документы")
     async def docs_menu(message: types.Message, state=None):
         if not is_authorized(message.from_user.id):
-            await refuse(message)
-            return
+            await refuse(message); return
 
         if not os.path.isfile(DOC_PATH):
             kb = getattr(message.bot, "main_kb", None)
@@ -28,11 +27,10 @@ def register_docs_handlers(dp, is_authorized, refuse):
 
         await message.answer("Нажми на кнопку, чтобы получить файл:", reply_markup=docs_kb)
 
-    @dp.message(StateFilter('*'), F.text.in_({DOC_NAME, "⬅️ В меню"}))  # 👈
+    @dp.message(StateFilter('*'), F.text.in_({DOC_NAME, "⬅️ В меню"}))
     async def send_doc(message: types.Message, state=None):
         if not is_authorized(message.from_user.id):
-            await refuse(message)
-            return
+            await refuse(message); return
 
         if message.text == DOC_NAME:
             try:

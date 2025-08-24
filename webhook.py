@@ -18,7 +18,6 @@ WEBHOOK_PATH = os.environ.get("WEBHOOK_PATH", "/webhook")
 BASE_URL = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("WEBHOOK_BASE")
 CRON_TOKEN = os.environ.get("CRON_TOKEN", "")
 
-# опционально разрешим управлять поведением через флаг (по умолчанию НЕ удаляем)
 DELETE_WEBHOOK_ON_SHUTDOWN = os.environ.get("DELETE_WEBHOOK_ON_SHUTDOWN", "false").lower() == "true"
 
 if not BASE_URL:
@@ -30,17 +29,15 @@ if not BASE_URL:
 bot: Bot = main_bot
 dp: Dispatcher = main_dp
 
-# регистрируем все хендлеры (калькулятор/заметки/доки/напоминания)
 setup_handlers()
 
 async def on_startup(app: web.Application):
-    await ensure_indexes()  # индексы в Mongo
+    await ensure_indexes()
     url = BASE_URL.rstrip("/") + WEBHOOK_PATH
     await bot.set_webhook(url, secret_token=WEBHOOK_SECRET, drop_pending_updates=False)
     log.info("Webhook set to %s", url)
 
 async def on_shutdown(app: web.Application):
-    # ВАЖНО: по умолчанию webhook не удаляем — чтобы Telegram продолжал «будить» сервис
     if DELETE_WEBHOOK_ON_SHUTDOWN:
         try:
             await bot.delete_webhook(drop_pending_updates=False)
@@ -62,15 +59,14 @@ async def cron_due(request: web.Request):
 
 def create_app() -> web.Application:
     app = web.Application()
-    # обработчик апдейтов Telegram
     SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
         secret_token=WEBHOOK_SECRET
     ).register(app, path=WEBHOOK_PATH)
 
-    app.router.add_get("/", health)              # healthcheck
-    app.router.add_post("/cron/due", cron_due)   # будильник из GitHub Actions
+    app.router.add_get("/", health)
+    app.router.add_post("/cron/due", cron_due)
 
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
