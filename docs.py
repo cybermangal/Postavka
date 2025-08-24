@@ -1,7 +1,5 @@
 import os
-import io
 import time
-import base64
 from typing import List, Tuple, Optional, Dict, Any, Set
 
 import aiohttp
@@ -10,7 +8,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BufferedInputFile
 )
-from aiogram.filters import StateFilter
+from aiogram.filters import StateFilter, Command
 
 # =========================
 #   НАСТРОЙКИ GITHUB
@@ -63,26 +61,32 @@ def _require_repo() -> Optional[str]:
 # =========================
 #   КЭШ ДЕРЕВА РЕПО
 # =========================
-# Структура:
-#   TREE_CACHE = {
-#       "expires": <ts>,
-#       "branch_sha": "<sha-commit>",
-#       "tree": [ {path, type, sha, ...}, ... ]  # type = "blob" или "tree"
-#   }
+# TREE_CACHE = {"expires": <ts>, "branch_sha": "<sha>", "tree": [ {type, path, sha}, ... ]}
 TREE_CACHE: Dict[str, Any] = {}
 
 async def _gh_json(url: str, kind: str = "json") -> Any:
     async with aiohttp.ClientSession() as sess:
         async with sess.get(url, headers=_headers(kind), timeout=30) as resp:
-            # Пробрасываем 403 rate limit с понятным текстом
-            if resp.status == 403:
-                text = await resp.text()
-                raise RuntimeError(f"GitHub 403: {text}")
+            text = await resp.text()
+            if resp.status == 403 and "rate limit" in text.lower():
+                raise RuntimeError(f"GitHub 403 rate limit: {text}")
             if resp.status != 200:
-                text = await resp.text()
                 raise RuntimeError(f"GitHub error {resp.status}: {text}")
             if kind == "json":
-                return await resp.json()
+                import json
+                return json.loads(text)
+            else:
+                return text.encode()  # raw already bytes, but we used .text() above for uniformity
+
+async def _gh_bytes(url: str) -> bytes:
+    async with aiohttp.ClientSession() as sess:
+        async with sess.get(url, headers=_headers("raw"), timeout=60) as resp:
+            if resp.status == 403:
+                t = await resp.text()
+                raise RuntimeError(f"GitHub 403: {t}")
+            if resp.status != 200:
+                t = await resp.text()
+                raise RuntimeError(f"GitHub error {resp.status}: {t}")
             return await resp.read()
 
 async def _get_branch_commit_sha() -> str:
@@ -96,11 +100,7 @@ async def _get_branch_commit_sha() -> str:
 async def _get_tree_recursive(commit_sha: str) -> List[Dict[str, Any]]:
     url = f"https://api.github.com/repos/{GH_REPO}/git/trees/{commit_sha}?recursive=1"
     data = await _gh_json(url, "json")
-    if data.get("truncated") is True:
-        # У очень больших реп — дерево может быть обрезано. На практике для docs это редкость.
-        pass
     tree = data.get("tree", [])
-    # интересуют только нужные поля
     norm = []
     for it in tree:
         t = it.get("type")  # "blob" | "tree"
@@ -115,7 +115,6 @@ async def ensure_tree_cache(force: bool = False) -> None:
     now = time.time()
     if not force and TREE_CACHE and TREE_CACHE.get("expires", 0) > now:
         return
-    # Обновляем: 1) получаем sha ветки, 2) получаем дерево рекурсивно
     commit_sha = await _get_branch_commit_sha()
     tree = await _get_tree_recursive(commit_sha)
     TREE_CACHE.clear()
@@ -126,10 +125,6 @@ async def ensure_tree_cache(force: bool = False) -> None:
     })
 
 def _list_from_tree(current_path: str) -> Tuple[List[str], List[str]]:
-    """
-    Вернуть (dirs, files) — имена непосредственных детей текущего пути из кэшированного дерева.
-    Файлы фильтруются по ALLOWED_EXTS.
-    """
     current_path = current_path.strip("/")
     prefix = f"{current_path}/" if current_path else ""
     tree = TREE_CACHE.get("tree", [])
@@ -140,19 +135,14 @@ def _list_from_tree(current_path: str) -> Tuple[List[str], List[str]]:
         path = it["path"]
         if not path.startswith(prefix):
             continue
-        rest = path[len(prefix):]  # остаток под текущей папкой
+        rest = path[len(prefix):]
         if "/" in rest:
-            # это что-то глубже: первая часть — подпапка
-            first = rest.split("/", 1)[0]
-            dir_set.add(first)
+            dir_set.add(rest.split("/", 1)[0])
         else:
-            # это непосредственный элемент
             if it["type"] == "blob" and _is_allowed(rest):
                 file_list.append(rest)
 
-    dirs = sorted(dir_set, key=str.lower)
-    files = sorted(file_list, key=str.lower)
-    return dirs, files
+    return sorted(dir_set, key=str.lower), sorted(file_list, key=str.lower)
 
 def _find_blob_sha(full_path: str) -> Optional[str]:
     full_path = full_path.strip("/")
@@ -163,8 +153,7 @@ def _find_blob_sha(full_path: str) -> Optional[str]:
 
 async def gh_get_file_bytes_by_blob_sha(blob_sha: str) -> bytes:
     url = f"https://api.github.com/repos/{GH_REPO}/git/blobs/{blob_sha}"
-    # Просим RAW — вернёт байты файла
-    return await _gh_json(url, "raw")
+    return await _gh_bytes(url)
 
 # =========================
 #      UI helpers
@@ -196,6 +185,13 @@ def _build_inline_for_path(path: str, dirs: List[str], files: List[str]) -> Inli
         buttons = [[InlineKeyboardButton(text="🏠 Корень", callback_data=f"doc:d:{home}")]]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+async def _send_path_message(message: types.Message, path: str):
+    dirs, files = _list_from_tree(path)
+    kb = _build_inline_for_path(path, dirs, files)
+    caption = f"Выбери документ или папку:\nПуть: /{path}" if path else "Выбери документ или папку:\nПуть: /"
+    # ОДИН месседж: текст + inline-кнопки. Reply-клаву не трогаем.
+    await message.answer(caption, reply_markup=kb)
+
 # =========================
 #       HANDLERS
 # =========================
@@ -211,16 +207,14 @@ def register_docs_handlers(dp, is_authorized, refuse):
         if err:
             await message.answer(err, reply_markup=back_kb); return
 
-        # загрузим/освежим кэш дерева (2 запроса максимум)
         try:
             await ensure_tree_cache(force=False)
         except Exception as e:
-            # Если 403 rate limit — явно подскажем про GH_TOKEN
             txt = str(e)
-            if "403" in txt and "rate limit" in txt.lower():
+            if "rate limit" in txt.lower():
                 await message.answer(
-                    "⛔ GitHub rate limit. Добавь `GH_TOKEN` (PAT) в переменные окружения Render, "
-                    "либо подожди час. Ошибка:\n" + txt,
+                    "⛔ GitHub rate limit. Добавь `GH_TOKEN` (PAT) в переменные Render, "
+                    "или подожди час. Ошибка:\n" + txt,
                     reply_markup=back_kb
                 )
                 return
@@ -228,11 +222,25 @@ def register_docs_handlers(dp, is_authorized, refuse):
             return
 
         root = GH_DOCS_PATH or ""
-        dirs, files = _list_from_tree(root)
-        kb = _build_inline_for_path(root, dirs, files)
-        await message.answer("Выбери документ или папку:", reply_markup=back_kb)
-        await message.answer(f"Путь: /{root}" if root else "Путь: /", reply_markup=kb)
+        await _send_path_message(message, root)
 
+    # Доп.команда: /docs — то же самое, удобно для тестов
+    @dp.message(Command("docs"))
+    async def docs_cmd(message: types.Message):
+        if not is_authorized(message.from_user.id):
+            await refuse(message); return
+        err = _require_repo()
+        if err:
+            await message.answer(err, reply_markup=back_kb); return
+        try:
+            await ensure_tree_cache(force=False)
+        except Exception as e:
+            await message.answer(f"Ошибка GitHub: {e}", reply_markup=back_kb)
+            return
+        root = GH_DOCS_PATH or ""
+        await _send_path_message(message, root)
+
+    # Навигация по папкам и выбор файла (инлайн)
     @dp.callback_query(F.data.startswith("doc:"))
     async def on_doc_cb(cb: CallbackQuery):
         if not is_authorized(cb.from_user.id):
@@ -246,12 +254,12 @@ def register_docs_handlers(dp, is_authorized, refuse):
         path = rest.strip("/")
 
         if kind == "d":
-            # Навигация по папке — только кэш, без доп.запросов
             try:
-                await ensure_tree_cache(force=False)  # на случай истёкшего TTL
+                await ensure_tree_cache(force=False)
                 dirs, files = _list_from_tree(path)
                 kb = _build_inline_for_path(path, dirs, files)
-                await cb.message.edit_text(f"Путь: /{path}" if path else "Путь: /")
+                caption = f"Выбери документ или папку:\nПуть: /{path}" if path else "Выбери документ или папку:\nПуть: /"
+                await cb.message.edit_text(caption)
                 await cb.message.edit_reply_markup(reply_markup=kb)
             except Exception as e:
                 await cb.answer("Ошибка")
@@ -259,12 +267,11 @@ def register_docs_handlers(dp, is_authorized, refuse):
             return
 
         if kind == "f":
-            # Скачивание файла: 1 запрос по blob sha
             try:
                 await ensure_tree_cache(force=False)
                 sha = _find_blob_sha(path)
                 if not sha:
-                    await cb.answer("Не найден файл"); return
+                    await cb.answer("Файл не найден"); return
                 raw = await gh_get_file_bytes_by_blob_sha(sha)
                 name = path.rsplit("/", 1)[-1]
                 await cb.message.answer_document(
@@ -272,7 +279,6 @@ def register_docs_handlers(dp, is_authorized, refuse):
                     caption=f"📁 {name}"
                 )
             except Exception as e:
-                # Для публичного репо дадим прямую ссылку
                 fallback = f"https://raw.githubusercontent.com/{GH_REPO}/{GH_BRANCH}/{path}"
                 msg = f"Не удалось отправить файл: {e}"
                 if GH_TOKEN:
@@ -285,6 +291,59 @@ def register_docs_handlers(dp, is_authorized, refuse):
             return
 
         await cb.answer("Неизвестное действие")
+
+    # Текстовый ввод: пользователь прислал имя файла (с расширением) — ищем и отдаём
+    @dp.message(StateFilter('*'), F.text.func(lambda s: isinstance(s, str) and "." in s))
+    async def docs_text_lookup(message: types.Message):
+        if not is_authorized(message.from_user.id):
+            await refuse(message); return
+
+        name = (message.text or "").strip()
+        if len(name) < 3:
+            return
+
+        try:
+            await ensure_tree_cache(force=False)
+        except Exception:
+            # тихо игнорируем, чтобы не мешать другим разделам
+            return
+
+        # ищем все совпадения по имени файла
+        matches: List[str] = []
+        for it in TREE_CACHE.get("tree", []):
+            if it["type"] != "blob":
+                continue
+            if it["path"].lower().endswith("/" + name.lower()) or it["path"].lower() == name.lower():
+                if _is_allowed(it["path"].rsplit("/", 1)[-1]):
+                    matches.append(it["path"])
+
+        if not matches:
+            return  # не мешаемся
+
+        # если файлов несколько — предложим выбрать
+        if len(matches) > 1:
+            buttons = [[InlineKeyboardButton(text=p, callback_data=f"doc:f:{p}")] for p in matches[:10]]
+            kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+            await message.answer("Нашёл несколько файлов, выбери нужный:", reply_markup=kb)
+            return
+
+        # один файл — отправляем
+        path = matches[0]
+        sha = _find_blob_sha(path)
+        if not sha:
+            await message.answer("Не удалось найти файл."); return
+        try:
+            raw = await gh_get_file_bytes_by_blob_sha(sha)
+            name = path.rsplit("/", 1)[-1]
+            await message.answer_document(BufferedInputFile(raw, filename=name), caption=f"📁 {name}")
+        except Exception as e:
+            fallback = f"https://raw.githubusercontent.com/{GH_REPO}/{GH_BRANCH}/{path}"
+            msg = f"Не удалось отправить файл: {e}"
+            if GH_TOKEN:
+                msg += "\n(Файл может быть приватным; прямая ссылка без токена не откроется.)"
+            else:
+                msg += f"\nЕсли репозиторий публичный, попробуйте ссылку: {fallback}"
+            await message.answer(msg)
 
     # Кнопка «⬅️ В меню» (обычная reply-клавиатура)
     @dp.message(StateFilter('*'), F.text == "⬅️ В меню")
