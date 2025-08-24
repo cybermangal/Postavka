@@ -1,14 +1,19 @@
+# docs.py — документы из GitHub (Trees API + кэш), свой Router, один месседж с инлайн-кнопками
 import os
 import time
+import logging
 from typing import List, Tuple, Optional, Dict, Any, Set
 
 import aiohttp
-from aiogram import types, F
+from aiogram import types, F, Router
+from aiogram.filters import StateFilter, Command
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BufferedInputFile
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    CallbackQuery, BufferedInputFile
 )
-from aiogram.filters import StateFilter, Command
+
+log = logging.getLogger("docs")
 
 # =========================
 #   НАСТРОЙКИ GITHUB
@@ -55,7 +60,7 @@ def _headers(kind: str = "json") -> dict:
 
 def _require_repo() -> Optional[str]:
     if not GH_REPO or "/" not in GH_REPO:
-        return "❗️GitHub не настроен. Укажи переменные: GH_REPO=owner/repo, GH_DOCS_PATH (и GH_TOKEN для приватного репо)."
+        return "❗️GitHub не настроен. Укажи переменные: GH_REPO=owner/repo, GH_BRANCH, GH_DOCS_PATH (и GH_TOKEN для приватного репо)."
     return None
 
 # =========================
@@ -76,7 +81,7 @@ async def _gh_json(url: str, kind: str = "json") -> Any:
                 import json
                 return json.loads(text)
             else:
-                return text.encode()  # raw already bytes, but we used .text() above for uniformity
+                return text.encode()
 
 async def _gh_bytes(url: str) -> bytes:
     async with aiohttp.ClientSession() as sess:
@@ -123,6 +128,7 @@ async def ensure_tree_cache(force: bool = False) -> None:
         "branch_sha": commit_sha,
         "tree": tree,
     })
+    log.info("Docs cache loaded: %s items, ttl=%ss", len(tree), GH_CACHE_TTL)
 
 def _list_from_tree(current_path: str) -> Tuple[List[str], List[str]]:
     current_path = current_path.strip("/")
@@ -130,7 +136,6 @@ def _list_from_tree(current_path: str) -> Tuple[List[str], List[str]]:
     tree = TREE_CACHE.get("tree", [])
     dir_set: Set[str] = set()
     file_list: List[str] = []
-
     for it in tree:
         path = it["path"]
         if not path.startswith(prefix):
@@ -141,7 +146,6 @@ def _list_from_tree(current_path: str) -> Tuple[List[str], List[str]]:
         else:
             if it["type"] == "blob" and _is_allowed(rest):
                 file_list.append(rest)
-
     return sorted(dir_set, key=str.lower), sorted(file_list, key=str.lower)
 
 def _find_blob_sha(full_path: str) -> Optional[str]:
@@ -155,21 +159,14 @@ async def gh_get_file_bytes_by_blob_sha(blob_sha: str) -> bytes:
     url = f"https://api.github.com/repos/{GH_REPO}/git/blobs/{blob_sha}"
     return await _gh_bytes(url)
 
-# =========================
-#      UI helpers
-# =========================
-
 def _build_inline_for_path(path: str, dirs: List[str], files: List[str]) -> InlineKeyboardMarkup:
     buttons: List[List[InlineKeyboardButton]] = []
-
     for d in dirs:
         full = _join_path(path, d)
         buttons.append([InlineKeyboardButton(text=f"📁 {d}", callback_data=f"doc:d:{full}")])
-
     for f in files:
         full = _join_path(path, f)
         buttons.append([InlineKeyboardButton(text=f"📄 {f}", callback_data=f"doc:f:{full}")])
-
     parent = _parent_path(path)
     nav_row: List[InlineKeyboardButton] = []
     if parent != path:
@@ -179,7 +176,6 @@ def _build_inline_for_path(path: str, dirs: List[str], files: List[str]) -> Inli
         nav_row.append(InlineKeyboardButton(text="🏠 Корень", callback_data=f"doc:d:{home}"))
     if nav_row:
         buttons.append(nav_row)
-
     if not buttons:
         home = GH_DOCS_PATH or ""
         buttons = [[InlineKeyboardButton(text="🏠 Корень", callback_data=f"doc:d:{home}")]]
@@ -189,20 +185,24 @@ async def _send_path_message(message: types.Message, path: str):
     dirs, files = _list_from_tree(path)
     kb = _build_inline_for_path(path, dirs, files)
     caption = f"Выбери документ или папку:\nПуть: /{path}" if path else "Выбери документ или папку:\nПуть: /"
-    # ОДИН месседж: текст + inline-кнопки. Reply-клаву не трогаем.
     await message.answer(caption, reply_markup=kb)
 
 # =========================
-#       HANDLERS
+#       ROUTER + HANDLERS
 # =========================
+docs_router = Router(name="docs")
 
 def register_docs_handlers(dp, is_authorized, refuse):
+    # Включаем отдельный роутер, чтобы порядок был управляемым
+    dp.include_router(docs_router)
 
-    @dp.message(StateFilter('*'), F.text == "📁 Документы")
-    async def docs_menu(message: types.Message, state=None):
+    @docs_router.message(Command("docs"))
+    @docs_router.message(StateFilter('*'), F.text.in_({"📁 Документы", "Документы"}))
+    async def docs_menu(message: types.Message):
         if not is_authorized(message.from_user.id):
             await refuse(message); return
 
+        log.info("Docs: open requested by %s", message.from_user.id)
         err = _require_repo()
         if err:
             await message.answer(err, reply_markup=back_kb); return
@@ -211,10 +211,10 @@ def register_docs_handlers(dp, is_authorized, refuse):
             await ensure_tree_cache(force=False)
         except Exception as e:
             txt = str(e)
+            log.warning("Docs: cache load error: %s", txt)
             if "rate limit" in txt.lower():
                 await message.answer(
-                    "⛔ GitHub rate limit. Добавь `GH_TOKEN` (PAT) в переменные Render, "
-                    "или подожди час. Ошибка:\n" + txt,
+                    "⛔ GitHub rate limit. Добавь `GH_TOKEN` на Render или подожди час.\n" + txt,
                     reply_markup=back_kb
                 )
                 return
@@ -224,24 +224,7 @@ def register_docs_handlers(dp, is_authorized, refuse):
         root = GH_DOCS_PATH or ""
         await _send_path_message(message, root)
 
-    # Доп.команда: /docs — то же самое, удобно для тестов
-    @dp.message(Command("docs"))
-    async def docs_cmd(message: types.Message):
-        if not is_authorized(message.from_user.id):
-            await refuse(message); return
-        err = _require_repo()
-        if err:
-            await message.answer(err, reply_markup=back_kb); return
-        try:
-            await ensure_tree_cache(force=False)
-        except Exception as e:
-            await message.answer(f"Ошибка GitHub: {e}", reply_markup=back_kb)
-            return
-        root = GH_DOCS_PATH or ""
-        await _send_path_message(message, root)
-
-    # Навигация по папкам и выбор файла (инлайн)
-    @dp.callback_query(F.data.startswith("doc:"))
+    @docs_router.callback_query(F.data.startswith("doc:"))
     async def on_doc_cb(cb: CallbackQuery):
         if not is_authorized(cb.from_user.id):
             await cb.message.answer("⛔️ Доступ запрещён."); await cb.answer(); return
@@ -252,7 +235,6 @@ def register_docs_handlers(dp, is_authorized, refuse):
             await cb.answer("Некорректные данные"); return
 
         path = rest.strip("/")
-
         if kind == "d":
             try:
                 await ensure_tree_cache(force=False)
@@ -262,6 +244,7 @@ def register_docs_handlers(dp, is_authorized, refuse):
                 await cb.message.edit_text(caption)
                 await cb.message.edit_reply_markup(reply_markup=kb)
             except Exception as e:
+                log.warning("Docs: nav error: %s", e)
                 await cb.answer("Ошибка")
                 await cb.message.answer(f"Ошибка GitHub: {e}")
             return
@@ -279,6 +262,7 @@ def register_docs_handlers(dp, is_authorized, refuse):
                     caption=f"📁 {name}"
                 )
             except Exception as e:
+                log.warning("Docs: download error: %s", e)
                 fallback = f"https://raw.githubusercontent.com/{GH_REPO}/{GH_BRANCH}/{path}"
                 msg = f"Не удалось отправить файл: {e}"
                 if GH_TOKEN:
@@ -292,8 +276,8 @@ def register_docs_handlers(dp, is_authorized, refuse):
 
         await cb.answer("Неизвестное действие")
 
-    # Текстовый ввод: пользователь прислал имя файла (с расширением) — ищем и отдаём
-    @dp.message(StateFilter('*'), F.text.func(lambda s: isinstance(s, str) and "." in s))
+    # Текстовый поиск файла по названию
+    @docs_router.message(StateFilter('*'), F.text.func(lambda s: isinstance(s, str) and "." in s))
     async def docs_text_lookup(message: types.Message):
         if not is_authorized(message.from_user.id):
             await refuse(message); return
@@ -301,33 +285,28 @@ def register_docs_handlers(dp, is_authorized, refuse):
         name = (message.text or "").strip()
         if len(name) < 3:
             return
-
         try:
             await ensure_tree_cache(force=False)
         except Exception:
-            # тихо игнорируем, чтобы не мешать другим разделам
             return
 
-        # ищем все совпадения по имени файла
         matches: List[str] = []
         for it in TREE_CACHE.get("tree", []):
             if it["type"] != "blob":
                 continue
-            if it["path"].lower().endswith("/" + name.lower()) or it["path"].lower() == name.lower():
-                if _is_allowed(it["path"].rsplit("/", 1)[-1]):
-                    matches.append(it["path"])
+            leaf = it["path"].rsplit("/", 1)[-1]
+            if leaf.lower() == name.lower() and _is_allowed(leaf):
+                matches.append(it["path"])
 
         if not matches:
-            return  # не мешаемся
+            return
 
-        # если файлов несколько — предложим выбрать
         if len(matches) > 1:
             buttons = [[InlineKeyboardButton(text=p, callback_data=f"doc:f:{p}")] for p in matches[:10]]
             kb = InlineKeyboardMarkup(inline_keyboard=buttons)
             await message.answer("Нашёл несколько файлов, выбери нужный:", reply_markup=kb)
             return
 
-        # один файл — отправляем
         path = matches[0]
         sha = _find_blob_sha(path)
         if not sha:
@@ -345,8 +324,25 @@ def register_docs_handlers(dp, is_authorized, refuse):
                 msg += f"\nЕсли репозиторий публичный, попробуйте ссылку: {fallback}"
             await message.answer(msg)
 
-    # Кнопка «⬅️ В меню» (обычная reply-клавиатура)
-    @dp.message(StateFilter('*'), F.text == "⬅️ В меню")
-    async def back_to_menu(message: types.Message, state=None):
+    # Кнопка «⬅️ В меню»
+    @docs_router.message(StateFilter('*'), F.text == "⬅️ В меню")
+    async def back_to_menu(message: types.Message):
         kb = getattr(message.bot, "main_kb", None)
         await message.answer("Главное меню:", reply_markup=kb)
+
+    # Диагностика: /docs_debug (чтобы понять, почему «тишина»)
+    @docs_router.message(Command("docs_debug"))
+    async def docs_debug(message: types.Message):
+        if not is_authorized(message.from_user.id):
+            await refuse(message); return
+        size = len(TREE_CACHE.get("tree", [])) if TREE_CACHE else 0
+        exp = int(TREE_CACHE.get("expires", 0) - time.time()) if TREE_CACHE else 0
+        await message.reply(
+            "Docs debug:\n"
+            f"- GH_REPO: `{GH_REPO}`\n"
+            f"- GH_BRANCH: `{GH_BRANCH}`\n"
+            f"- GH_DOCS_PATH: `{GH_DOCS_PATH}`\n"
+            f"- cache_items: *{size}*\n"
+            f"- cache_ttl_left: *{max(0, exp)}*s",
+            parse_mode="Markdown"
+        )
