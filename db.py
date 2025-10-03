@@ -16,7 +16,7 @@ async def ensure_indexes():
     await reminders.create_index([("when", 1)])
     await reminders.create_index("id", unique=True, sparse=True)
     await notes.create_index([("user_id", 1), ("created_at", -1)])
-    # для access достаточно _id по умолчанию
+    # для access достаточно _id
 
 # ===== Utilities for access control =====
 async def get_allowed_set() -> set[int]:
